@@ -114,8 +114,8 @@ jobs:
         env:
           GH_TOKEN: "${{ github.token }}"
         run: |
-          release_tag="${openssl_tag}"
-          release_version="${openssl_tag#openssl-}"
+          release_tag="${openssl_branch}"
+          release_version="${openssl_branch#openssl-}"
           release_title="OpenSSL ${release_version}"
           release_notes="OpenSSL ${release_version} - fully static build for ${{ matrix.arch_type }} using musl cross-make"
 
