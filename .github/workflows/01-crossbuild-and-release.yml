@@ -1,0 +1,136 @@
+name: 01 - cross build and release
+
+on:
+  - workflow_dispatch
+
+permissions:
+  actions: read
+  id-token: write
+  contents: write
+  attestations: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        name: [openssl]
+        os_id: [alpine]
+        os_version_id: [edge]
+        arch_type:
+          [
+            aarch64-linux-musl,
+            arm-linux-musleabi,
+            arm-linux-musleabihf,
+            armv6-linux-musleabihf,
+            armv7l-linux-musleabihf,
+            i686-linux-musl,
+            x86_64-linux-musl,
+            mips-linux-musl,
+            mipsel-linux-musl,
+            mips64-linux-musl,
+            mips64el-linux-musl,
+            powerpc-linux-musl,
+            powerpc64le-linux-musl,
+            s390x-linux-musl,
+            riscv64-linux-musl,
+            loongarch64-linux-musl,
+          ]
+
+    name: ${{ matrix.name }} ${{ matrix.arch_type }}
+
+    env:
+      prerelease: false
+      XZ_OPT: "-9T0"
+      container_name: cross_builder
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set openssl architecture mapping
+        run: |
+          case "${{ matrix.arch_type }}" in
+            aarch64-linux-musl) echo "openssl_arch=linux-aarch64" >> $GITHUB_ENV ;;
+            arm-linux-musleabi) echo "openssl_arch=linux-armv4" >> $GITHUB_ENV ;;
+            arm-linux-musleabihf|armv6-linux-musleabihf|armv7l-linux-musleabihf) echo "openssl_arch=linux-armv4" >> $GITHUB_ENV ;;
+            i686-linux-musl) echo "openssl_arch=linux-x86" >> $GITHUB_ENV ;;
+            x86_64-linux-musl) echo "openssl_arch=linux-x86_64" >> $GITHUB_ENV ;;
+            mips-linux-musl) echo "openssl_arch=linux-mips32" >> $GITHUB_ENV ;;
+            mipsel-linux-musl) echo "openssl_arch=linux-mips32" >> $GITHUB_ENV ;;
+            mips64-linux-musl) echo "openssl_arch=linux64-mips64" >> $GITHUB_ENV ;;
+            mips64el-linux-musl) echo "openssl_arch=linux64-mips64" >> $GITHUB_ENV ;;
+            powerpc-linux-musl) echo "openssl_arch=linux-ppc" >> $GITHUB_ENV ;;
+            powerpc64le-linux-musl) echo "openssl_arch=linux-ppc64le" >> $GITHUB_ENV ;;
+            s390x-linux-musl) echo "openssl_arch=linux64-s390x" >> $GITHUB_ENV ;;
+            riscv64-linux-musl) echo "openssl_arch=linux64-riscv64" >> $GITHUB_ENV ;;
+            loongarch64-linux-musl) echo "openssl_arch=linux64-loongarch64" >> $GITHUB_ENV ;;
+          esac
+
+      - name: Create docker ${{ env.container_name }} ${{ matrix.arch }} container
+        uses: userdocs/actions/qbt_docker@e8f57bd585c7bb6dcce011694d6772bab657abca # v1.0.7
+        with:
+          os_id: ghcr.io/userdocs/musl-cross-make
+          os_version_id: ${{ matrix.arch_type }}
+          additional_apps: >
+            coreutils curl findutils git
+          custom_docker_commands: |
+            -e CFLAGS=-O3 -pipe -fdata-sections -ffunction-sections -fPIC -pthread -static --static
+            -e CXXFLAGS=-O3 -pipe -fdata-sections -ffunction-sections -fPIC -pthread -static --static
+            -e CPPFLAGS=-isystem /usr/include/fortify -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3
+            -e LDFLAGS=-static --static -Wl,--as-needed,--sort-common,-z,nodlopen,-z,noexecstack,-z,now,-z,relro,--no-copy-dt-needed-entries,--build-id ${{ !startsWith(matrix.arch_type, 'mips') && '-fuse-ld=mold' || '' }}
+
+      - name: Get latest OpenSSL release tag
+        run: |
+          openssl_tag=$(gh api repos/openssl/openssl/releases/latest --jq '.tag_name' 2>/dev/null || echo "master")
+          echo "openssl_branch=${openssl_tag}" >> $GITHUB_ENV
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Docker - Git clone openssl
+        run: docker exec -w "${wd}" "${container_name}" git clone --single-branch --branch "${openssl_branch}" --shallow-submodules --recurse-submodules --depth 1 https://github.com/openssl/openssl.git openssl
+
+      - name: Docker - Configure ${{ matrix.arch_type }} openssl
+        run: docker exec -w "${wd}/openssl" "${container_name}" ./Configure "${openssl_arch}" --prefix="${wd}/openssl-completed" --libdir="lib" --openssldir="/etc/ssl" threads no-shared no-dso no-docs no-async no-comp no-idea no-mdc2 no-rc5 no-ec2m no-ssl3 no-seed no-weak-ssl-ciphers
+
+      - name: Docker - Build ${{ matrix.arch_type }} openssl
+        run: docker exec -w "${wd}/openssl" "${container_name}" make -j"$(nproc)"
+
+      - name: Docker - Install ${{ matrix.arch_type }} openssl
+        run: docker exec -w "${wd}/openssl" "${container_name}" make install_sw
+
+      - name: Docker - Archive ${{ matrix.arch_type }} openssl build
+        run: docker exec -w "${wd}/openssl-completed" "${container_name}" sh -c 'tar -cJf ../${{ matrix.arch_type }}.tar.xz *'
+
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: ${{ matrix.arch_type }}.tar.xz
+
+      - name: Host - Create release - tag - assets
+        env:
+          GH_TOKEN: "${{ github.token }}"
+        run: |
+          release_tag="${openssl_tag}"
+          release_version="${openssl_tag#openssl-}"
+          release_title="OpenSSL ${release_version}"
+          release_notes="OpenSSL ${release_version} - fully static build for ${{ matrix.arch_type }} using musl cross-make"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${release_tag}" >/dev/null 2>&1; then
+            gh release edit "${release_tag}" \
+              --title "${release_title}" \
+              --notes "${release_notes}" \
+              --latest
+            gh release upload "${release_tag}" \
+              --clobber \
+              "${{ matrix.arch_type }}.tar.xz"
+          else
+            gh release create "${release_tag}" \
+              --title "${release_title}" \
+              --notes "${release_notes}" \
+              --latest \
+              "${{ matrix.arch_type }}.tar.xz"
+          fi
