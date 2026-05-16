@@ -78,10 +78,10 @@ jobs:
           additional_apps: >
             coreutils curl findutils git
           custom_docker_commands: |
-            -e CFLAGS=-O3 -pipe -fdata-sections -ffunction-sections -fPIC -pthread -static --static
-            -e CXXFLAGS=-O3 -pipe -fdata-sections -ffunction-sections -fPIC -pthread -static --static
-            -e CPPFLAGS=-isystem /usr/include/fortify -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3
-            -e LDFLAGS=-L/usr/local/lib -Wl,--as-needed,--sort-common,-z,nodlopen,-z,noexecstack,-z,now,-z,relro,--no-copy-dt-needed-entries,--build-id ${{ !startsWith(matrix.arch_type, 'mips') && '-fuse-ld=mold' || '' }}
+            -e CFLAGS=-O3 -pipe -fdata-sections -ffunction-sections -fPIC -fstack-clash-protection -fstack-protector-strong -fno-plt -fno-delete-null-pointer-checks -fno-strict-overflow -fno-strict-aliasing -ftrivial-auto-var-init=zero -fexceptions -pthread -static --static
+            -e CXXFLAGS=-O3 -pipe -fdata-sections -ffunction-sections -fPIC -fstack-clash-protection -fstack-protector-strong -fno-plt -fno-delete-null-pointer-checks -fno-strict-overflow -fno-strict-aliasing -ftrivial-auto-var-init=zero -fexceptions -pthread -static --static
+            -e CPPFLAGS=-isystem /usr/include/fortify -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -D_GLIBCXX_ASSERTIONS -w
+            -e LDFLAGS=-pthread ${{ !startsWith(matrix.arch_type, 'mips') && '-fuse-ld=mold' || '' }}
 
       - name: Get latest OpenSSL release tag
         run: |
@@ -94,7 +94,20 @@ jobs:
         run: docker exec -w "${wd}" "${container_name}" git clone --single-branch --branch "${openssl_branch}" --shallow-submodules --recurse-submodules --depth 1 https://github.com/openssl/openssl.git openssl
 
       - name: Docker - Configure ${{ matrix.arch_type }} openssl
-        run: docker exec -w "${wd}/openssl" "${container_name}" ./Configure "${openssl_arch}" --prefix="${wd}/openssl-completed" --libdir="lib" --openssldir="/etc/ssl" threads no-shared no-dso no-docs no-async no-comp no-idea no-mdc2 no-rc5 no-ec2m no-ssl3 no-seed no-weak-ssl-ciphers
+        run: |
+          docker exec -w "${wd}/openssl" \
+            -e CC=${{ matrix.arch_type }}-gcc \
+            -e CXX=${{ matrix.arch_type }}-g++ \
+            -e AR=${{ matrix.arch_type }}-ar \
+            -e NM=${{ matrix.arch_type }}-nm \
+            -e RANLIB=${{ matrix.arch_type }}-ranlib \
+            "${container_name}" \
+            ./Configure "${openssl_arch}" \
+              --prefix="${wd}/openssl-completed" \
+              --libdir="lib" \
+              --openssldir="/etc/ssl" \
+              --release \
+              threads no-shared no-dso no-docs no-async no-comp no-idea no-mdc2 no-rc5 no-ec2m no-ssl3 no-seed no-weak-ssl-ciphers
 
       - name: Docker - Build ${{ matrix.arch_type }} openssl
         run: docker exec -w "${wd}/openssl" "${container_name}" make -j"$(nproc)"
