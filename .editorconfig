@@ -1,0 +1,71 @@
+root = true
+
+[*]
+end_of_line = lf
+charset = utf-8
+trim_trailing_whitespace = true
+insert_final_newline = true
+indent_style = tab
+indent_size = 4
+
+[{**.*sh,test/run,**.bats}]
+indent_size = 4
+indent_style = tab
+
+shell_variant      = bash
+binary_next_line   = true  # like -bn
+switch_case_indent = true  # like -ci
+space_redirects    = true  # like -sr
+keep_padding       = false # like -kp
+end_of_line        = lf
+charset            = utf-8
+trim_trailing_whitespace = true
+insert_final_newline = true
+
+[**.md]
+indent_size = 4
+indent_style = space
+
+[**.bats]
+indent_style = tab
+shell_variant	= bats
+
+[*.{yml,yaml,html}]
+indent_style = space
+indent_size = 2
+
+[*.json]
+insert_final_newline = false
+indent_style = space
+indent_size = 2
+
+[**.astro]
+indent_size = 2
+indent_style = tab
+end_of_line = lf
+
+[**.css]
+indent_size = 4
+indent_style = space
+end_of_line = lf
+
+[LICENSE.txt]
+indent_style = space
+indent_size = 2
+
+[**.txt]
+
+[patch]
+indent_style = space
+indent_size = 0
+trim_trailing_whitespace = false
+
+[url]
+insert_final_newline = false
+
+[patch]
+indent_style = space
+indent_size = 0
+
+[Jamfile]
+indent_style = tab
