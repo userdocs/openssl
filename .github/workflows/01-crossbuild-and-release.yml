@@ -81,7 +81,7 @@ jobs:
             -e CFLAGS=-O3 -pipe -fdata-sections -ffunction-sections -fPIC -pthread -static --static
             -e CXXFLAGS=-O3 -pipe -fdata-sections -ffunction-sections -fPIC -pthread -static --static
             -e CPPFLAGS=-isystem /usr/include/fortify -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3
-            -e LDFLAGS=-static --static -Wl,--as-needed,--sort-common,-z,nodlopen,-z,noexecstack,-z,now,-z,relro,--no-copy-dt-needed-entries,--build-id ${{ !startsWith(matrix.arch_type, 'mips') && '-fuse-ld=mold' || '' }}
+            -e LDFLAGS=-L/usr/local/lib -Wl,--as-needed,--sort-common,-z,nodlopen,-z,noexecstack,-z,now,-z,relro,--no-copy-dt-needed-entries,--build-id ${{ !startsWith(matrix.arch_type, 'mips') && '-fuse-ld=mold' || '' }}
 
       - name: Get latest OpenSSL release tag
         run: |
