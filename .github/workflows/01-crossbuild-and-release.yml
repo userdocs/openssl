@@ -50,7 +50,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          openssl_tag=$(gh api repos/openssl/openssl/releases/latest --jq '.tag_name')
+          openssl_tag=$(gh api repos/openssl/openssl/releases --jq '[.[] | select(.prerelease == false) | select(.tag_name | test("rc|beta|alpha") | not)] | first | .tag_name')
           this_tag=$(gh api repos/${{ github.repository }}/releases/latest --jq '.tag_name' 2>/dev/null || echo "none")
 
           printf '%s\n' "OpenSSL latest tag : ${openssl_tag}"
@@ -65,9 +65,21 @@ jobs:
           if [[ "${newer}" == "${openssl_ver}" && "${openssl_ver}" != "${this_ver}" ]]; then
             printf '%s\n' "New release detected - proceeding with build."
             echo "needs_build=true" >> "$GITHUB_OUTPUT"
+            printf '\n%b\n' "### :rocket: New OpenSSL Release Detected" >> "$GITHUB_STEP_SUMMARY"
+            printf '\n%b\n' "| | Tag |" >> "$GITHUB_STEP_SUMMARY"
+            printf '%b\n' "| --- | --- |" >> "$GITHUB_STEP_SUMMARY"
+            printf '%b\n' "| OpenSSL upstream | \`${openssl_tag}\` |" >> "$GITHUB_STEP_SUMMARY"
+            printf '%b\n' "| This repo | \`${this_tag}\` |" >> "$GITHUB_STEP_SUMMARY"
+            printf '\n%b\n' "Build triggered." >> "$GITHUB_STEP_SUMMARY"
           else
             printf '%s\n' "No new release - skipping build."
             echo "needs_build=false" >> "$GITHUB_OUTPUT"
+            printf '\n%b\n' "### :white_check_mark: No New OpenSSL Release" >> "$GITHUB_STEP_SUMMARY"
+            printf '\n%b\n' "| | Tag |" >> "$GITHUB_STEP_SUMMARY"
+            printf '%b\n' "| --- | --- |" >> "$GITHUB_STEP_SUMMARY"
+            printf '%b\n' "| OpenSSL upstream | \`${openssl_tag}\` |" >> "$GITHUB_STEP_SUMMARY"
+            printf '%b\n' "| This repo | \`${this_tag}\` |" >> "$GITHUB_STEP_SUMMARY"
+            printf '\n%b\n' "Already up to date. Build skipped." >> "$GITHUB_STEP_SUMMARY"
           fi
 
           echo "openssl_tag=${openssl_tag}" >> "$GITHUB_OUTPUT"
