@@ -1,7 +1,15 @@
 name: 01 - cross build and release
 
 on:
-  - workflow_dispatch
+  schedule:
+    - cron: "0 */3 * * *"
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: Skip version check and force build of latest upstream OpenSSL tag
+        type: boolean
+        default: false
+        required: false
 
 permissions:
   actions: read
@@ -86,7 +94,7 @@ jobs:
 
   build:
     needs: check_release
-    if: needs.check_release.outputs.needs_build == 'true'
+    if: needs.check_release.outputs.needs_build == 'true' || inputs.force_build == true || inputs.force_build == true
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
