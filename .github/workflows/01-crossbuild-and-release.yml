@@ -10,7 +10,71 @@ permissions:
   attestations: write
 
 jobs:
+  skip_duplicate_job:
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      actions: write
+      contents: read
+    outputs:
+      should_skip: ${{ steps.skip_check.outputs.should_skip }}
+    steps:
+      - id: skip_check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          github_workflow: ${{ github.workflow }}
+          github_ref_name: ${{ github.ref_name }}
+          github_run_id: ${{ github.run_id }}
+        run: |
+          duplicates=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "${github_workflow}" --branch "${github_ref_name}" --limit 100 --json databaseId,status --jq ".[] | select(.status != \"completed\" and .databaseId < ${github_run_id}) | .databaseId" | tr '\n' ',' | sed 's/,$//')
+
+          if [[ -n "$duplicates" ]]; then
+            printf '%s\n' "should_skip=true" >> "$GITHUB_OUTPUT"
+            printf '\n%b\n' "### :black_square_button: Skip Duplicate Job" >> $GITHUB_STEP_SUMMARY
+            printf '\n%b\n' "Found older running/queued duplicate runs: ${duplicates}. Skipping this run." >> $GITHUB_STEP_SUMMARY
+          else
+            printf '%s\n' "should_skip=false" >> "$GITHUB_OUTPUT"
+            printf '\n%b\n' "### :arrow_forward: Skip Duplicate Job" >> $GITHUB_STEP_SUMMARY
+            printf '\n%b\n' "No older duplicate runs found. Proceeding." >> $GITHUB_STEP_SUMMARY
+          fi
+
+  check_release:
+    if: needs.skip_duplicate_job.outputs.should_skip != 'true'
+    needs: ["skip_duplicate_job"]
+    runs-on: ubuntu-latest
+    outputs:
+      openssl_tag: ${{ steps.compare.outputs.openssl_tag }}
+      needs_build: ${{ steps.compare.outputs.needs_build }}
+    steps:
+      - name: Check if new OpenSSL release is available
+        id: compare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          openssl_tag=$(gh api repos/openssl/openssl/releases/latest --jq '.tag_name')
+          this_tag=$(gh api repos/${{ github.repository }}/releases/latest --jq '.tag_name' 2>/dev/null || echo "none")
+
+          printf '%s\n' "OpenSSL latest tag : ${openssl_tag}"
+          printf '%s\n' "This repo latest tag: ${this_tag}"
+
+          openssl_ver="${openssl_tag#openssl-}"
+          this_ver="${this_tag#openssl-}"
+
+          # Use sort -V for proper semver comparison
+          newer=$(printf '%s\n%s' "${this_ver}" "${openssl_ver}" | sort -V | tail -n1)
+
+          if [[ "${newer}" == "${openssl_ver}" && "${openssl_ver}" != "${this_ver}" ]]; then
+            printf '%s\n' "New release detected - proceeding with build."
+            echo "needs_build=true" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "No new release - skipping build."
+            echo "needs_build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "openssl_tag=${openssl_tag}" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: check_release
+    if: needs.check_release.outputs.needs_build == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -44,6 +108,7 @@ jobs:
       prerelease: false
       XZ_OPT: "-9T0"
       container_name: cross_builder
+      openssl_branch: ${{ needs.check_release.outputs.openssl_tag }}
 
     steps:
       - name: Checkout
@@ -82,13 +147,6 @@ jobs:
             -e CXXFLAGS=-O3 -pipe -fdata-sections -ffunction-sections -fPIC -fstack-clash-protection -fstack-protector-strong -fno-plt -fno-delete-null-pointer-checks -fno-strict-overflow -fno-strict-aliasing -ftrivial-auto-var-init=zero -fexceptions -pthread -static --static
             -e CPPFLAGS=-isystem /usr/include/fortify -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -D_GLIBCXX_ASSERTIONS -w
             -e LDFLAGS=-pthread ${{ !startsWith(matrix.arch_type, 'mips') && '-fuse-ld=mold' || '' }}
-
-      - name: Get latest OpenSSL release tag
-        run: |
-          openssl_tag=$(gh api repos/openssl/openssl/releases/latest --jq '.tag_name' 2>/dev/null || echo "master")
-          echo "openssl_branch=${openssl_tag}" >> $GITHUB_ENV
-        env:
-          GH_TOKEN: ${{ github.token }}
 
       - name: Docker - Git clone openssl
         run: docker exec -w "${wd}" "${container_name}" git clone --single-branch --branch "${openssl_branch}" --shallow-submodules --recurse-submodules --depth 1 https://github.com/openssl/openssl.git openssl
