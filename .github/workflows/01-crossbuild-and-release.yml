@@ -11,44 +11,20 @@ on:
         default: false
         required: false
 
-permissions:
-  actions: read
-  id-token: write
-  contents: write
-  attestations: write
+# Default: the workflow token has no permissions. Each job grants only what it needs.
+permissions: {}
+
+# Only one run per branch at a time. A new run waits for the active one to finish
+# (never cancelled mid-release); if several are waiting, only the newest is kept.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  skip_duplicate_job:
-    runs-on: ubuntu-24.04-arm
-    permissions:
-      actions: write
-      contents: read
-    outputs:
-      should_skip: ${{ steps.skip_check.outputs.should_skip }}
-    steps:
-      - id: skip_check
-        env:
-          GH_TOKEN: ${{ github.token }}
-          github_workflow: ${{ github.workflow }}
-          github_ref_name: ${{ github.ref_name }}
-          github_run_id: ${{ github.run_id }}
-        run: |
-          duplicates=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "${github_workflow}" --branch "${github_ref_name}" --limit 100 --json databaseId,status --jq ".[] | select(.status != \"completed\" and .databaseId < ${github_run_id}) | .databaseId" | tr '\n' ',' | sed 's/,$//')
-
-          if [[ -n "$duplicates" ]]; then
-            printf '%s\n' "should_skip=true" >> "$GITHUB_OUTPUT"
-            printf '\n%b\n' "### :black_square_button: Skip Duplicate Job" >> $GITHUB_STEP_SUMMARY
-            printf '\n%b\n' "Found older running/queued duplicate runs: ${duplicates}. Skipping this run." >> $GITHUB_STEP_SUMMARY
-          else
-            printf '%s\n' "should_skip=false" >> "$GITHUB_OUTPUT"
-            printf '\n%b\n' "### :arrow_forward: Skip Duplicate Job" >> $GITHUB_STEP_SUMMARY
-            printf '\n%b\n' "No older duplicate runs found. Proceeding." >> $GITHUB_STEP_SUMMARY
-          fi
-
   check_release:
-    if: needs.skip_duplicate_job.outputs.should_skip != 'true'
-    needs: ["skip_duplicate_job"]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       openssl_tag: ${{ steps.compare.outputs.openssl_tag }}
       needs_build: ${{ steps.compare.outputs.needs_build }}
@@ -94,8 +70,12 @@ jobs:
 
   build:
     needs: check_release
-    if: needs.check_release.outputs.needs_build == 'true' || inputs.force_build == true || inputs.force_build == true
+    if: needs.check_release.outputs.needs_build == 'true' || inputs.force_build == true
     runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout
+      id-token: write # attestation: mint OIDC token for Sigstore signing
+      attestations: write # attestation: store in the repo's attestations API
     strategy:
       fail-fast: false
       matrix:
@@ -132,7 +112,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -197,9 +177,33 @@ jobs:
         run: docker exec -w "${wd}/openssl-completed" "${container_name}" sh -c 'tar -cJf ../${{ matrix.arch_type }}.tar.xz *'
 
       - name: Generate artifact attestation
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: ${{ matrix.arch_type }}.tar.xz
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.arch_type }}
+          path: ${{ matrix.arch_type }}.tar.xz
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    # Runs only when every matrix build succeeded; any failure skips this job, so no release is created.
+    needs: [check_release, build]
+    if: success()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      openssl_branch: ${{ needs.check_release.outputs.openssl_tag }}
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
 
       - name: Host - Create release - tag - assets
         env:
@@ -208,20 +212,25 @@ jobs:
           release_tag="${openssl_branch}"
           release_version="${openssl_branch#openssl-}"
           release_title="OpenSSL ${release_version}"
-          release_notes="OpenSSL ${release_version} - fully static build for ${{ matrix.arch_type }} using musl cross-make"
+          release_notes="OpenSSL ${release_version} - fully static builds using musl cross-make"
 
-          if git ls-remote --exit-code --tags origin "refs/tags/${release_tag}" >/dev/null 2>&1; then
-            gh release edit "${release_tag}" \
+          shopt -s nullglob
+          assets=(dist/*.tar.xz)
+          if (( ${#assets[@]} == 0 )); then
+            printf '%s\n' "No build assets found - aborting release."
+            exit 1
+          fi
+
+          if gh release view "${release_tag}" --repo "${GITHUB_REPOSITORY}" > /dev/null 2>&1; then
+            gh release edit "${release_tag}" --repo "${GITHUB_REPOSITORY}" \
               --title "${release_title}" \
               --notes "${release_notes}" \
               --latest
-            gh release upload "${release_tag}" \
-              --clobber \
-              "${{ matrix.arch_type }}.tar.xz"
+            gh release upload "${release_tag}" --repo "${GITHUB_REPOSITORY}" --clobber "${assets[@]}"
           else
-            gh release create "${release_tag}" \
+            gh release create "${release_tag}" --repo "${GITHUB_REPOSITORY}" \
               --title "${release_title}" \
               --notes "${release_notes}" \
               --latest \
-              "${{ matrix.arch_type }}.tar.xz"
+              "${assets[@]}"
           fi
